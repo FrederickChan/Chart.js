@@ -50,6 +50,26 @@ module.exports = function(Chart) {
 		}
 	};
 
+	function computeTextSize(context, tick, font) {
+		return helpers.isArray(tick) ?
+			helpers.longestText(context, font, tick) :
+			context.measureText(tick).width;
+	}
+
+	function parseFontOptions(options) {
+		var globalDefaults = Chart.defaults.global;
+		var size = helpers.getValueOrDefault(options.fontSize, globalDefaults.defaultFontSize);
+		var style = helpers.getValueOrDefault(options.fontStyle, globalDefaults.defaultFontStyle);
+		var family = helpers.getValueOrDefault(options.fontFamily, globalDefaults.defaultFontFamily);
+
+		return {
+			size: size,
+			style: style,
+			family: family,
+			font: helpers.fontString(size, style, family)
+		};
+	}
+
 	Chart.Scale = Chart.Element.extend({
 		/**
 		 * Get the padding needed for the scale
@@ -197,65 +217,62 @@ module.exports = function(Chart) {
 		calculateTickRotation: function() {
 			var me = this;
 			var context = me.ctx;
-			var globalDefaults = Chart.defaults.global;
 			var optionTicks = me.options.ticks;
 
 			// Get the width of each grid by calculating the difference
 			// between x offsets between 0 and 1.
-			var tickFontSize = helpers.getValueOrDefault(optionTicks.fontSize, globalDefaults.defaultFontSize);
-			var tickFontStyle = helpers.getValueOrDefault(optionTicks.fontStyle, globalDefaults.defaultFontStyle);
-			var tickFontFamily = helpers.getValueOrDefault(optionTicks.fontFamily, globalDefaults.defaultFontFamily);
-			var tickLabelFont = helpers.fontString(tickFontSize, tickFontStyle, tickFontFamily);
-			context.font = tickLabelFont;
+			var tickFont = parseFontOptions(optionTicks);
+			context.font = tickFont.font;
 
-			var firstWidth = context.measureText(me.ticks[0]).width;
-			var lastWidth = context.measureText(me.ticks[me.ticks.length - 1]).width;
+			var firstTick = me.ticks[0];
+			var firstWidth = computeTextSize(context, firstTick, tickFont.font);
+
+			var lastTick = me.ticks[me.ticks.length - 1];
+			var lastWidth = computeTextSize(context, lastTick, tickFont.font);
 			var firstRotated;
 
 			me.labelRotation = optionTicks.minRotation || 0;
 			me.paddingRight = 0;
 			me.paddingLeft = 0;
 
-			if (me.options.display) {
-				if (me.isHorizontal()) {
-					me.paddingRight = lastWidth / 2 + 3;
-					me.paddingLeft = firstWidth / 2 + 3;
+			if (me.options.display && me.isHorizontal()) {
+				me.paddingRight = lastWidth / 2 + 3;
+				me.paddingLeft = firstWidth / 2 + 3;
 
-					if (!me.longestTextCache) {
-						me.longestTextCache = {};
+				if (!me.longestTextCache) {
+					me.longestTextCache = {};
+				}
+				var originalLabelWidth = helpers.longestText(context, tickFont.font, me.ticks, me.longestTextCache);
+				var labelWidth = originalLabelWidth;
+				var cosRotation;
+				var sinRotation;
+
+				// Allow 3 pixels x2 padding either side for label readability
+				// only the index matters for a dataset scale, but we want a consistent interface between scales
+				var tickWidth = me.getPixelForTick(1) - me.getPixelForTick(0) - 6;
+
+				// Max label rotation can be set or default to 90 - also act as a loop counter
+				while (labelWidth > tickWidth && me.labelRotation < optionTicks.maxRotation) {
+					cosRotation = Math.cos(helpers.toRadians(me.labelRotation));
+					sinRotation = Math.sin(helpers.toRadians(me.labelRotation));
+
+					firstRotated = cosRotation * firstWidth;
+
+					// We're right aligning the text now.
+					if (firstRotated + tickFont.size / 2 > me.yLabelWidth) {
+						me.paddingLeft = firstRotated + tickFont.size / 2;
 					}
-					var originalLabelWidth = helpers.longestText(context, tickLabelFont, me.ticks, me.longestTextCache);
-					var labelWidth = originalLabelWidth;
-					var cosRotation;
-					var sinRotation;
 
-					// Allow 3 pixels x2 padding either side for label readability
-					// only the index matters for a dataset scale, but we want a consistent interface between scales
-					var tickWidth = me.getPixelForTick(1) - me.getPixelForTick(0) - 6;
+					me.paddingRight = tickFont.size / 2;
 
-					// Max label rotation can be set or default to 90 - also act as a loop counter
-					while (labelWidth > tickWidth && me.labelRotation < optionTicks.maxRotation) {
-						cosRotation = Math.cos(helpers.toRadians(me.labelRotation));
-						sinRotation = Math.sin(helpers.toRadians(me.labelRotation));
-
-						firstRotated = cosRotation * firstWidth;
-
-						// We're right aligning the text now.
-						if (firstRotated + tickFontSize / 2 > me.yLabelWidth) {
-							me.paddingLeft = firstRotated + tickFontSize / 2;
-						}
-
-						me.paddingRight = tickFontSize / 2;
-
-						if (sinRotation * originalLabelWidth > me.maxHeight) {
-							// go back one step
-							me.labelRotation--;
-							break;
-						}
-
-						me.labelRotation++;
-						labelWidth = cosRotation * originalLabelWidth;
+					if (sinRotation * originalLabelWidth > me.maxHeight) {
+						// go back one step
+						me.labelRotation--;
+						break;
 					}
+
+					me.labelRotation++;
+					labelWidth = cosRotation * originalLabelWidth;
 				}
 			}
 
@@ -342,8 +359,11 @@ module.exports = function(Chart) {
 					minSize.height = Math.min(me.maxHeight, minSize.height + labelHeight);
 					me.ctx.font = tickLabelFont;
 
-					var firstLabelWidth = me.ctx.measureText(me.ticks[0]).width;
-					var lastLabelWidth = me.ctx.measureText(me.ticks[me.ticks.length - 1]).width;
+					var firstTick = me.ticks[0];
+					var firstLabelWidth = computeTextSize(me.ctx, firstTick, tickLabelFont);
+
+					var lastTick = me.ticks[me.ticks.length - 1];
+					var lastLabelWidth = computeTextSize(me.ctx, lastTick, tickLabelFont);
 
 					// Ensure that our ticks are always inside the canvas. When rotated, ticks are right aligned which means that the right padding is dominated
 					// by the font height
@@ -685,7 +705,7 @@ module.exports = function(Chart) {
 
 					var label = itemToDraw.label;
 					if (helpers.isArray(label)) {
-						for (var i = 0, y = -(label.length - 1)*tickFontSize*0.75; i < label.length; ++i) {
+						for (var i = 0, y = 0; i < label.length; ++i) {
 							// We just make sure the multiline element is a string here..
 							context.fillText('' + label[i], 0, y);
 							// apply same lineSpacing as calculated @ L#320
